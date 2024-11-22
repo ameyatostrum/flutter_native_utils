@@ -1,4 +1,4 @@
-# flutter_native_utils
+# Flutter native utils
 
 A plug-in to expose utilites which employ native platfrom libraries.
 
