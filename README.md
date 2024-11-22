@@ -17,3 +17,11 @@ samples, guidance on mobile development, and a full API reference.
 
 To add platforms, run `flutter create -t plugin --platforms <platforms> .` in this directory.
 You can also find a detailed instruction on how to add platforms in the `pubspec.yaml` at https://flutter.dev/to/pubspec-plugin-platforms.
+
+## Creating a branch
+A branch is created for each platform. 
+1. When creating a new branch, create a branch from the platform for which you are want to develop the plug-in, and suffix it with `-dev-{your name}`.
+For example, if you would to develop or fix a bug for iOS platform, the branch name would be `ios-dev-ameyatostrum`.
+
+2. Once you are satisfied with the development, merge your code with platform branch and mark it for review.
+
