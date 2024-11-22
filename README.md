@@ -1,15 +1,19 @@
 # flutter_native_utils
 
-A new Flutter plugin project.
+A plug-in to expose utilites which employ native platfrom libraries.
 
 ## Getting Started
 
 This project is a starting point for a Flutter
 [plug-in package](https://flutter.dev/to/develop-plugins),
 a specialized package that includes platform-specific implementation code for
-Android and/or iOS.
+Android/iOS/Windows.
 
 For help getting started with Flutter development, view the
 [online documentation](https://docs.flutter.dev), which offers tutorials,
 samples, guidance on mobile development, and a full API reference.
 
+## Add platforms
+
+To add platforms, run `flutter create -t plugin --platforms <platforms> .` in this directory.
+You can also find a detailed instruction on how to add platforms in the `pubspec.yaml` at https://flutter.dev/to/pubspec-plugin-platforms.
