@@ -8,7 +8,8 @@ abstract class FlutterNativeUtilsPlatform extends PlatformInterface {
 
   static final Object _token = Object();
 
-  static FlutterNativeUtilsPlatform _instance = MethodChannelFlutterNativeUtils();
+  static FlutterNativeUtilsPlatform _instance =
+      MethodChannelFlutterNativeUtils();
 
   /// The default instance of [FlutterNativeUtilsPlatform] to use.
   ///
@@ -23,7 +24,7 @@ abstract class FlutterNativeUtilsPlatform extends PlatformInterface {
     _instance = instance;
   }
 
-  Future<String?> getPlatformVersion() {
-    throw UnimplementedError('platformVersion() has not been implemented.');
+  Future<void> requestAppRestart() async {
+    throw UnimplementedError('requestAppRestart() has not been implemented.');
   }
 }
