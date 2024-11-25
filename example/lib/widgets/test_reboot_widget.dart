@@ -1,30 +1,13 @@
 import 'package:flutter/material.dart';
 
+// ignore: must_be_immutable
 class TestRebootWidget extends StatelessWidget {
   void Function()? onPressed;
+
   TestRebootWidget({
     super.key,
     this.onPressed,
   });
-
-  Future<void> showConfirmationDialog({
-    required void Function()? onPressed,
-    required BuildContext context,
-  }) async {
-    await showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("Reboot the app"),
-        content: const Text("Are you sure you want to reboot the application?"),
-        actions: [
-          TextButton(onPressed: onPressed, child: const Text("Reboot")),
-          TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text("Cancel")),
-        ],
-      ),
-    );
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -50,6 +33,25 @@ class TestRebootWidget extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+
+  Future<void> showConfirmationDialog({
+    required void Function()? onPressed,
+    required BuildContext context,
+  }) async {
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Reboot the app"),
+        content: const Text("Are you sure you want to reboot the application?"),
+        actions: [
+          TextButton(onPressed: onPressed, child: const Text("Reboot")),
+          TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text("Cancel")),
+        ],
+      ),
     );
   }
 }
