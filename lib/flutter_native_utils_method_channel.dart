@@ -10,13 +10,6 @@ class MethodChannelFlutterNativeUtils extends FlutterNativeUtilsPlatform {
   final methodChannel = const MethodChannel('flutter_native_utils');
 
   @override
-  Future<String?> getPlatformVersion() async {
-    final version =
-        await methodChannel.invokeMethod<String>('getPlatformVersion');
-    return version;
-  }
-
-  @override
   Future<void> requestAppRestart() async {
     try {
       await methodChannel.invokeMethod<void>('RequestAppRestart');
