@@ -1,6 +1,7 @@
 import 'package:fluent_ui/fluent_ui.dart';
 import 'package:flutter_native_utils/flutter_native_utils.dart';
 import 'package:flutter_native_utils_example/widgets/widgets.dart';
+import 'package:flutter_native_utils_example/widgets/win_info_widget.dart';
 
 class MyApp extends StatefulWidget {
   const MyApp({super.key});
@@ -12,7 +13,8 @@ class MyApp extends StatefulWidget {
 class _MyAppState extends State<MyApp> {
   final _flutterNativeUtilsPlugin = FlutterNativeUtils();
 
-  int topIndex = 1;
+  int topIndex = 0;
+  String systemInfo = "System info will be displayed here";
   PaneDisplayMode displayMode = PaneDisplayMode.auto;
 
   @override
@@ -28,6 +30,9 @@ class _MyAppState extends State<MyApp> {
         pane: NavigationPane(
             selected: topIndex,
             onItemPressed: (index) {
+              setState(() {
+                topIndex = index;
+              });
               if (index == topIndex) {
                 if (displayMode == PaneDisplayMode.open) {
                   setState(() => displayMode = PaneDisplayMode.compact);
@@ -40,10 +45,21 @@ class _MyAppState extends State<MyApp> {
             items: [
               PaneItem(
                 icon: const Icon(FluentIcons.home),
-                title: const Text('Home'),
+                title: const Text('Reboot'),
                 body: TestRebootWidget(
-                  onPressed: () async =>
-                      await _flutterNativeUtilsPlugin.requestAppRestart(),
+                  onPressed: () async => await _flutterNativeUtilsPlugin.requestAppRestart(),
+                ),
+              ),
+              PaneItem(
+                icon: const Icon(FluentIcons.home),
+                title: const Text('System Info'),
+                body: WinInfoWidget(
+                  info: systemInfo,
+                  onPressed: () async {
+                    final hardwareInfo = await _flutterNativeUtilsPlugin.requestHardwareInfo();
+                    systemInfo = "Current hardware CPU ID is ${hardwareInfo.systemCpuId} and board ID is ${hardwareInfo.systemBoardId}";
+                    setState(() {});
+                  },
                 ),
               ),
             ]),
