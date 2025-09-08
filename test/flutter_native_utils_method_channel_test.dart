@@ -114,71 +114,76 @@ void main() {
           )),
         );
       });
+    },
+  );
 
-      // group('checkTpmStatus', () {
-      //   test('returns TpmStatus.enabled when platform returns "enabled"', () async {
-      //     // channel.setMockMethodCallHandler((methodCall) async {
-      //     //   if (methodCall.method == 'checkTpmStatus') {
-      //     //     return 'enabled';
-      //     //   }
-      //     //   return null;
-      //     // });
-      //     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(methodChannel, (MethodCall methodCall) async {
-      //       expect(methodCall.method, 'checkTpmStatus');
-      //       return 'enabled';
-      //     });
-      //     final status = await sut.checkTpmStatus();
-      //     expect(status, equals(TpmStatus.enabled));
-      //   });
+  group(
+    'createKeyPair',
+    () {
+      test('should return Uint8List when native call succeeds', () async {
+        // Arrange
+        const keyName = 'valid_key';
+        final mockPublicKey = Uint8List.fromList([1, 2, 3, 4, 5]);
 
-      //   //   test('returns TpmStatus.disabled when platform returns "disabled"', () async {
-      //   //     channel.setMockMethodCallHandler((methodCall) async {
-      //   //       return 'disabled';
-      //   //     });
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+          methodChannel,
+          (MethodCall methodCall) async {
+            expect(methodCall.method, 'CreateKeyPair');
+            expect(methodCall.arguments, {'keyName': keyName});
+            return mockPublicKey;
+          },
+        );
 
-      //   //     final status = await checkTpmStatus();
-      //   //     expect(status, equals(TpmStatus.disabled));
-      //   //   });
+        // Act
+        final result = await sut.createKeyPair(keyName);
 
-      //   //   test('returns TpmStatus.unavailable when platform returns "unavailable"', () async {
-      //   //     channel.setMockMethodCallHandler((methodCall) async {
-      //   //       return 'unavailable';
-      //   //     });
+        // Assert
+        expect(result, isA<Uint8List>());
+        expect(result, mockPublicKey);
+      });
 
-      //   //     final status = await checkTpmStatus();
-      //   //     expect(status, equals(TpmStatus.unavailable));
-      //   //   });
+      test('should throw PlatformException when native call fails', () async {
+        // Arrange
+        const keyName = 'fail_key';
 
-      //   //   test('throws PlatformException when platform throws', () async {
-      //   //     channel.setMockMethodCallHandler((_) async {
-      //   //       throw PlatformException(code: 'ERROR', message: 'TPM check failed');
-      //   //     });
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+          methodChannel,
+          (MethodCall methodCall) async {
+            expect(methodCall.method, 'CreateKeyPair');
+            expect(methodCall.arguments, {'keyName': keyName});
+            throw PlatformException(code: 'KEY_CREATION_FAILED', message: 'Could not create key');
+          },
+        );
 
-      //   //     expect(() => checkTpmStatus(), throwsA(isA<PlatformException>()));
-      //   //   });
+        // Act & Assert
+        expect(() async => await sut.createKeyPair(keyName), throwsA(isA<Exception>()));
+      });
 
-      //   //   test('throws MissingPluginException when plugin not registered', () async {
-      //   //     channel.setMockMethodCallHandler(null); // simulate no handler
+      test('should throw Exception when native call returns null', () async {
+        // Arrange
+        const keyName = 'unexpected_key';
 
-      //   //     expect(() => checkTpmStatus(), throwsA(isA<MissingPluginException>()));
-      //   //   });
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+          methodChannel,
+          (MethodCall methodCall) async {
+            expect(methodCall.method, 'CreateKeyPair');
+            expect(methodCall.arguments, {'keyName': keyName});
+            return null; // simulate unexpected null
+          },
+        );
 
-      //   //   test('throws StateError for unexpected return values', () async {
-      //   //     channel.setMockMethodCallHandler((_) async {
-      //   //       return 'unknown_status';
-      //   //     });
+        // Act & Assert
+        expect(() => sut.createKeyPair(keyName), throwsA(isA<Exception>()));
+      });
 
-      //   //     expect(() => checkTpmStatus(), throwsA(isA<StateError>()));
-      //   //   });
+      test('should throw MissingPluginException when no handler is set', () async {
+        // Arrange
+        const keyName = 'any_key';
+        // no handler set → simulates unimplemented method
 
-      //   //   test('throws StateError when platform returns null', () async {
-      //   //     channel.setMockMethodCallHandler((_) async {
-      //   //       return null;
-      //   //     });
-
-      //   //     expect(() => checkTpmStatus(), throwsA(isA<StateError>()));
-      //   //   });
-      // });
+        // Act & Assert
+        expect(() => sut.createKeyPair(keyName), throwsA(isA<MissingPluginException>()));
+      });
     },
   );
 }

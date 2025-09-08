@@ -1,7 +1,6 @@
 import 'dart:typed_data';
 
 import 'package:flutter_native_utils/models/hardware_info.dart';
-import 'package:flutter_native_utils/models/tpm_status.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
 import 'flutter_native_utils_method_channel.dart';
@@ -31,53 +30,37 @@ abstract class FlutterNativeUtilsPlatform extends PlatformInterface {
     throw UnimplementedError('requestAppRestart() has not been implemented.');
   }
 
-  /* Both methods should check if current platform in Windows 11
-      Maybe call the method to check the TPM status within the sign challenge method*/
-  //TODO: method to check TPM status
-  /// Checks if a Trusted Platform Module (TPM) is available and enabled.
+  /// Creates a new secure key pair if none exists.
   ///
-  /// This method invokes a platform-specific implementation to determine
-  /// the presence and state of the Trusted Platform Module (TPM).
+  /// Keys are stored in a platform-protected storage provider
+  /// (for example, Windows CNG, macOS Secure Enclave, or Android Keystore).
   ///
-  /// Returns a [TpmStatus] indicating the current state:
-  /// - [TpmStatus.enabled] → TPM is present and enabled (for example, TPM 2.0 is active).
-  /// - [TpmStatus.disabled] → TPM is present but disabled or inactive.
-  /// - [TpmStatus.unavailable] → TPM is not available on the system or could not be detected.
+  /// [keyName] → a unique identifier for the key (persisted in secure storage).
   ///
-  /// Throws:
-  /// - [PlatformException] if the underlying platform call fails.
-  /// - [MissingPluginException] if no platform implementation is registered.
-  Future<TpmStatus> checkTpmStatus() {
-    throw UnimplementedError('checkTpmStatus() has not been implemented.');
-  }
-
-  /// Creates a new TPM-backed key pair if none exists.
-  ///
-  /// [keyName] → a unique identifier for the key (persisted in TPM storage).
-  ///
-  /// Returns the public key in DER-encoded format (or PEM as a string)
-  /// so it can be sent to the server for registration.
+  /// Returns:
+  /// - The public key in DER-encoded format (or PEM as a string),
+  ///   which can be sent to the server for registration.
   ///
   /// Throws:
   /// - [PlatformException] if key creation fails.
   /// - [MissingPluginException] if no platform implementation is registered.
-  Future<Uint8List> createTpmKeyPair(String keyName) {
-    throw UnimplementedError('createTpmKeyPair() has not been implemented.');
+  Future<Uint8List> createKeyPair(String keyName) {
+    throw UnimplementedError('createKeyPair() has not been implemented.');
   }
 
-  //TODO: method to sign challenge
-  /// Signs a [nonce] using the TPM-protected private key.
+  /// Signs a [nonce] using the platform-protected private key.
   ///
-  /// The TPM performs the signing operation internally, ensuring the private
-  /// key never leaves the hardware.
+  /// The private key never leaves the secure storage provider.
+  /// Only the signature is returned.
   ///
   /// [nonce] → A random byte array (typically 16–32 bytes) provided by the server.
   ///
-  /// Returns the raw signature as a [Uint8List]. You can encode this as Base64
-  /// before sending to the server.
+  /// Returns:
+  /// - The raw signature as a [Uint8List]. You can Base64-encode it before
+  ///   sending to the server.
   ///
   /// Throws:
-  /// - [PlatformException] if TPM signing fails.
+  /// - [PlatformException] if signing fails.
   /// - [MissingPluginException] if no platform implementation is registered.
   Future<Uint8List> signNonce(Uint8List nonce) {
     throw UnimplementedError('signNonce() has not been implemented.');

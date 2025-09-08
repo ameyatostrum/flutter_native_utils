@@ -1,4 +1,6 @@
-import 'package:flutter_native_utils/models/hardware_info.dart';
+import 'dart:typed_data';
+
+import 'package:flutter_native_utils/models/models.dart';
 
 import 'flutter_native_utils_platform_interface.dart';
 
@@ -53,13 +55,9 @@ class FlutterNativeUtils {
     return FlutterNativeUtilsPlatform.instance.requestHardwareInfo();
   }
 
-  // Future<TpmStatus> checkTpmStatus() {
-  //   return FlutterNativeUtilsPlatform.instance.checkTpmStatus();
-  // }
-
-  // Future<Uint8List> createTpmKeyPair(String keyName) {
-  //   return FlutterNativeUtilsPlatform.instance.createTpmKeyPair(keyName);
-  // }
+  Future<Uint8List> createKeyPair(String keyName) {
+    return FlutterNativeUtilsPlatform.instance.createKeyPair(keyName);
+  }
 
   // Future<Uint8List> signNonce(Uint8List nonce) {
   //   return FlutterNativeUtilsPlatform.instance.signNonce(nonce);
