@@ -219,8 +219,6 @@ static std::wstring Utf8ToWide(const std::string& utf8) {
 
 // ---- Key creation / export ----
 static std::vector<uint8_t> CreateOrOpenKeyPair(const std::wstring& keyName) {
-  DebugLog(L">>> CreateOrOpenKeyPair called for key: " + keyName);
-
   NCRYPT_PROV_HANDLE hProv = NULL;
   NCRYPT_KEY_HANDLE hKey = NULL;
   SECURITY_STATUS status;
@@ -228,37 +226,36 @@ static std::vector<uint8_t> CreateOrOpenKeyPair(const std::wstring& keyName) {
   // Open the default software KSP
   status = NCryptOpenStorageProvider(&hProv, MS_KEY_STORAGE_PROVIDER, 0);
   if (status != ERROR_SUCCESS) {
-    DebugLog(L"NCryptOpenStorageProvider failed, status: " + std::to_wstring(status));
     throw std::runtime_error("NCryptOpenStorageProvider failed");
   }
 
   // Try opening the key
   status = NCryptOpenKey(hProv, &hKey, keyName.c_str(), 0, 0);
   if (status == NTE_BAD_KEYSET) {
-    DebugLog(L"Key not found, generating new key pair...");
-
+    // Create new key if it doesn't exist
     status = NCryptCreatePersistedKey(
-        hProv, &hKey,
-        NCRYPT_RSA_ALGORITHM,   // or NCRYPT_ECDSA_P256_ALGORITHM
+        hProv,
+        &hKey,
+        NCRYPT_RSA_ALGORITHM,   // Could be changed to NCRYPT_ECDSA_P256_ALGORITHM
         keyName.c_str(),
         0,
         NCRYPT_OVERWRITE_KEY_FLAG);
 
     if (status != ERROR_SUCCESS) {
-      DebugLog(L"NCryptCreatePersistedKey failed, status: " + std::to_wstring(status));
       NCryptFreeObject(hProv);
       throw std::runtime_error("NCryptCreatePersistedKey failed");
     }
 
     // Set key length property (for RSA)
     DWORD keyLength = 2048;
-    status = NCryptSetProperty(hKey,
-                               NCRYPT_LENGTH_PROPERTY,
-                               (PBYTE)&keyLength,
-                               sizeof(keyLength),
-                               0);
+    status = NCryptSetProperty(
+        hKey,
+        NCRYPT_LENGTH_PROPERTY,
+        reinterpret_cast<PBYTE>(&keyLength),
+        sizeof(keyLength),
+        0);
+
     if (status != ERROR_SUCCESS) {
-      DebugLog(L"NCryptSetProperty failed, status: " + std::to_wstring(status));
       NCryptFreeObject(hKey);
       NCryptFreeObject(hProv);
       throw std::runtime_error("NCryptSetProperty failed");
@@ -267,19 +264,13 @@ static std::vector<uint8_t> CreateOrOpenKeyPair(const std::wstring& keyName) {
     // Finalize key
     status = NCryptFinalizeKey(hKey, 0);
     if (status != ERROR_SUCCESS) {
-      DebugLog(L"NCryptFinalizeKey failed, status: " + std::to_wstring(status));
       NCryptFreeObject(hKey);
       NCryptFreeObject(hProv);
       throw std::runtime_error("NCryptFinalizeKey failed");
     }
-
-    DebugLog(L"Key pair generated successfully");
   } else if (status != ERROR_SUCCESS) {
-    DebugLog(L"NCryptOpenKey failed, status: " + std::to_wstring(status));
     NCryptFreeObject(hProv);
     throw std::runtime_error("NCryptOpenKey failed");
-  } else {
-    DebugLog(L"Opened existing key successfully");
   }
 
   // Export public key
@@ -287,7 +278,7 @@ static std::vector<uint8_t> CreateOrOpenKeyPair(const std::wstring& keyName) {
   status = NCryptExportKey(
       hKey,
       NULL,
-      BCRYPT_RSAPUBLIC_BLOB,  // export format
+      BCRYPT_RSAPUBLIC_BLOB,
       NULL,
       NULL,
       0,
@@ -295,7 +286,6 @@ static std::vector<uint8_t> CreateOrOpenKeyPair(const std::wstring& keyName) {
       0);
 
   if (status != ERROR_SUCCESS) {
-    DebugLog(L"NCryptExportKey (size query) failed, status: " + std::to_wstring(status));
     NCryptFreeObject(hKey);
     NCryptFreeObject(hProv);
     throw std::runtime_error("NCryptExportKey size query failed");
@@ -313,13 +303,10 @@ static std::vector<uint8_t> CreateOrOpenKeyPair(const std::wstring& keyName) {
       0);
 
   if (status != ERROR_SUCCESS) {
-    DebugLog(L"NCryptExportKey failed, status: " + std::to_wstring(status));
     NCryptFreeObject(hKey);
     NCryptFreeObject(hProv);
     throw std::runtime_error("NCryptExportKey failed");
   }
-
-  DebugLog(L"Public key exported successfully, size: " + std::to_wstring(keySize));
 
   // Cleanup
   NCryptFreeObject(hKey);
@@ -334,23 +321,26 @@ void HandleCreateKeyPair(
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
   try {
     const auto* args = std::get_if<flutter::EncodableMap>(call.arguments());
-    if (!args) throw std::runtime_error("Invalid arguments");
+    if (!args) {
+      throw std::runtime_error("Invalid arguments");
+    }
 
     auto keyNameIt = args->find(flutter::EncodableValue("keyName"));
-    if (keyNameIt == args->end()) throw std::runtime_error("Missing keyName");
+    if (keyNameIt == args->end()) {
+      throw std::runtime_error("Missing keyName");
+    }
 
     std::string keyNameUtf8 = std::get<std::string>(keyNameIt->second);
     std::wstring keyName = Utf8ToWide(keyNameUtf8);
 
-    DebugLog(L"[HandleCreateKeyPair] Creating/Opening key pair");
     auto pubKey = CreateOrOpenKeyPair(keyName);
 
     result->Success(flutter::EncodableValue(pubKey));
   } catch (const std::exception& ex) {
-    DebugLog(L"[HandleCreateKeyPair] Exception: " + Utf8ToWide(ex.what()));
     result->Error("CNG_ERROR", ex.what());
   }
 }
+
 
 // void HandleCreateKeyPair(
 //     const flutter::MethodCall<flutter::EncodableValue>& call,
