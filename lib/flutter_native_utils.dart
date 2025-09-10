@@ -59,7 +59,7 @@ class FlutterNativeUtils {
     return FlutterNativeUtilsPlatform.instance.createKeyPair(keyName);
   }
 
-  // Future<Uint8List> signNonce(Uint8List nonce) {
-  //   return FlutterNativeUtilsPlatform.instance.signNonce(nonce);
-  // }
+  Future<Uint8List> signNonce(Uint8List nonce, String keyName) {
+    return FlutterNativeUtilsPlatform.instance.signNonce(nonce, keyName);
+  }
 }

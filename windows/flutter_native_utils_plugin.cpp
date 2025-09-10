@@ -3,8 +3,8 @@
 // This must be included before many other Windows headers.
 #include <windows.h>
 
-#include <comdef.h>   // for _bstr_t, COM helpers
-#include <Wbemidl.h>  // for IWbemLocator, IWbemServices, etc.
+#include <comdef.h>
+#include <Wbemidl.h>
 
 #include <VersionHelpers.h>
 
@@ -16,184 +16,169 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <unordered_map>
+#include <functional>
 
 #include <winrt/Windows.ApplicationModel.Core.h>
 #include <winrt/Windows.Foundation.h>
 
-#include <ncrypt.h>   // CNG (Key Storage Provider API)
+#include <ncrypt.h>
 #include <iostream>
 
 // Link required libraries
-#pragma comment(lib, "wbemuuid.lib")  // WMI
-#pragma comment(lib, "ncrypt.lib")    // CNG KSP
+#pragma comment(lib, "wbemuuid.lib")
+#pragma comment(lib, "ncrypt.lib")
 
 using namespace winrt;
 using namespace Windows::ApplicationModel::Core;
 using namespace Windows::Foundation;
 
 namespace flutter_native_utils {
-// ========== Utility Implementations ==========
+
+// ---------- Debug helper ----------
 static void DebugLog(const std::wstring& msg) {
-    OutputDebugString((msg + L"\n").c_str());
+  OutputDebugString((msg + L"\n").c_str());
 }
 
-// Handles RequestAppRestart call
+// ---------- RAII wrapper for NCrypt handles ----------
+struct NCryptHandle {
+  NCRYPT_HANDLE handle{0};
+  ~NCryptHandle() { reset(); }
+
+  void reset() {
+    if (handle) {
+      NCryptFreeObject(handle);
+      handle = 0;
+    }
+  }
+  operator NCRYPT_HANDLE() const { return handle; }
+  NCRYPT_HANDLE* put() { reset(); return &handle; }
+};
+
+// ---------- UTF8 <-> Wide ----------
+static std::wstring Utf8ToWide(const std::string& str) {
+  if (str.empty()) return L"";
+  int len = MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), nullptr, 0);
+  std::wstring result(len, 0);
+  MultiByteToWideChar(CP_UTF8, 0, str.c_str(), (int)str.size(), result.data(), len);
+  return result;
+}
+
+static std::string WideToUtf8(const std::wstring& wstr) {
+  if (wstr.empty()) return "";
+  int len = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(),
+                                nullptr, 0, nullptr, nullptr);
+  std::string result(len, 0);
+  WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), (int)wstr.size(),
+                      result.data(), len, nullptr, nullptr);
+  return result;
+}
+
+// ---------- RequestAppRestart ----------
 static std::wstring RequestAppRestart(const std::wstring& restartArgs) {
-    // Get the current module file name 
-    wchar_t moduleFileName[MAX_PATH];
-    if (GetModuleFileName(NULL, moduleFileName, MAX_PATH) == 0)
-    {
-        return L"Failed to get module file name.";
-    }
+  wchar_t moduleFileName[MAX_PATH];
+  if (GetModuleFileName(NULL, moduleFileName, MAX_PATH) == 0) {
+    return L"Failed to get module file name.";
+  }
 
-    // Prepare the command line arguments 
-    std::wstring commandLine = L"\"";
-    commandLine += moduleFileName;
-    commandLine += L"\" ";
-    commandLine += restartArgs;
+  std::wstring commandLine = L"\"";
+  commandLine += moduleFileName;
+  commandLine += L"\" ";
+  commandLine += restartArgs;
 
-    // Create the process with the same executable 
-    STARTUPINFO startupInfo = { 0 };
-    startupInfo.cb = sizeof(startupInfo);
-    PROCESS_INFORMATION processInfo = { 0 };
+  STARTUPINFO startupInfo = { sizeof(startupInfo) };
+  PROCESS_INFORMATION processInfo = { 0 };
 
-    if (!CreateProcess(moduleFileName, // Application name 
-        &commandLine[0], // Command line arguments 
-        NULL, // Process attributes
-        NULL, // Thread attributes 
-        FALSE, // Inherit handles 
-        0, // Creation flags 
-        NULL, // Environment 
-        NULL, // Current directory 
-        &startupInfo, // Startup information 
-        &processInfo // Process information 
-    )) {
-        return L"Failed to create process.";
-    }
+  if (!CreateProcess(moduleFileName, &commandLine[0], NULL, NULL, FALSE,
+                     0, NULL, NULL, &startupInfo, &processInfo)) {
+    return L"Failed to create process.";
+  }
 
-    // Close handles to the new process and primary thread 
-    CloseHandle(processInfo.hProcess);
-    CloseHandle(processInfo.hThread);
+  CloseHandle(processInfo.hProcess);
+  CloseHandle(processInfo.hThread);
 
-    // Exit the current process 
-    ExitProcess(0);
+  ExitProcess(0);
 }
 
-// Wrapper to handle RequestAppRestart channel call
 void HandleRequestAppRestart(
-    const flutter::MethodCall<flutter::EncodableValue>& call,
+    const flutter::MethodCall<flutter::EncodableValue>&,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
-  std::wstring restartArgs = L"";
-  std::wstring requestMessage = RequestAppRestart(restartArgs);
-
-  if (requestMessage == L"Success") {
+  std::wstring msg = RequestAppRestart(L"");
+  if (msg == L"Success") {
     result->Success("Restart requested successfully.");
   } else {
-    result->Error("FAILURE", "Failed to request to restart the application.");
+    result->Error("FAILURE", WideToUtf8(msg));
   }
 }
 
-// -------- RequestHardwareInfo --------
-
+// ---------- Hardware Info (WMI) ----------
 static std::string QueryWmiProperty(const std::wstring& wmi_class,
                                     const std::wstring& property) {
-    HRESULT hres = CoInitializeEx(0, COINIT_MULTITHREADED);
-    if (hres == RPC_E_CHANGED_MODE) {
-        // COM already initialized in STA mode; safe to continue
-        hres = S_OK;
-    }
-    if (FAILED(hres)) {
-        return "";
-    }
+  HRESULT hres = CoInitializeEx(0, COINIT_MULTITHREADED);
+  if (hres == RPC_E_CHANGED_MODE) hres = S_OK;
+  if (FAILED(hres)) return "";
 
-    hres = CoInitializeSecurity(
-        NULL, -1, NULL, NULL,
-        RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE,
-        NULL, EOAC_NONE, NULL);
+  hres = CoInitializeSecurity(NULL, -1, NULL, NULL,
+                              RPC_C_AUTHN_LEVEL_DEFAULT,
+                              RPC_C_IMP_LEVEL_IMPERSONATE,
+                              NULL, EOAC_NONE, NULL);
+  if (FAILED(hres) && hres != RPC_E_TOO_LATE) {
+    CoUninitialize();
+    return "";
+  }
 
-    if (FAILED(hres) && hres != RPC_E_TOO_LATE) {
-        if (hres != RPC_E_TOO_LATE) {
-            CoUninitialize();
-        }
-        return "";
-    }
+  IWbemLocator* pLoc = NULL;
+  hres = CoCreateInstance(CLSID_WbemLocator, 0, CLSCTX_INPROC_SERVER,
+                          IID_IWbemLocator, reinterpret_cast<LPVOID*>(&pLoc));
+  if (FAILED(hres)) {
+    CoUninitialize();
+    return "";
+  }
 
-    IWbemLocator* pLoc = NULL;
-    hres = CoCreateInstance(
-        CLSID_WbemLocator, 0, CLSCTX_INPROC_SERVER,
-        IID_IWbemLocator, reinterpret_cast<LPVOID*>(&pLoc));
-    if (FAILED(hres)) {
-        CoUninitialize();
-        return "";
-    }
-
-    IWbemServices* pSvc = NULL;
-    hres = pLoc->ConnectServer(
-        _bstr_t(L"ROOT\\CIMV2"), NULL, NULL, 0, NULL, 0, 0, &pSvc);
-    if (FAILED(hres)) {
-        pLoc->Release();
-        CoUninitialize();
-        return "";
-    }
-
-    hres = CoSetProxyBlanket(
-        pSvc, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULL,
-        RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE,
-        NULL, EOAC_NONE);
-    if (FAILED(hres)) {
-        pSvc->Release();
-        pLoc->Release();
-        CoUninitialize();
-        return "";
-    }
-
-    IEnumWbemClassObject* pEnumerator = NULL;
-    std::wstring query = L"SELECT " + property + L" FROM " + wmi_class;
-    hres = pSvc->ExecQuery(
-        bstr_t("WQL"), bstr_t(query.c_str()),
-        WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
-        NULL, &pEnumerator);
-    if (FAILED(hres)) {
-        pSvc->Release();
-        pLoc->Release();
-        CoUninitialize();
-        return "";
-    }
-
-    IWbemClassObject* pclsObj = NULL;
-    ULONG uReturn = 0;
-    std::string resultStr;
-
-    if (pEnumerator) {
-        HRESULT hr = pEnumerator->Next(WBEM_INFINITE, 1, &pclsObj, &uReturn);
-        if (uReturn != 0) {
-            VARIANT vtProp;
-            hr = pclsObj->Get(property.c_str(), 0, &vtProp, 0, 0);
-            if (SUCCEEDED(hr) && vtProp.vt == VT_BSTR) {
-                int len = WideCharToMultiByte(CP_UTF8, 0, vtProp.bstrVal, -1,
-                                              NULL, 0, NULL, NULL);
-                if (len > 0) {
-                    std::string temp(len - 1, 0);
-                    WideCharToMultiByte(CP_UTF8, 0, vtProp.bstrVal, -1,
-                                        temp.data(), len, NULL, NULL);
-                    resultStr = temp;
-                }
-            }
-            VariantClear(&vtProp);
-            pclsObj->Release();
-        }
-        pEnumerator->Release();
-    }
-
-    pSvc->Release();
+  IWbemServices* pSvc = NULL;
+  hres = pLoc->ConnectServer(_bstr_t(L"ROOT\\CIMV2"),
+                             NULL, NULL, 0, NULL, 0, 0, &pSvc);
+  if (FAILED(hres)) {
     pLoc->Release();
     CoUninitialize();
+    return "";
+  }
 
-    return resultStr;
+  CoSetProxyBlanket(pSvc, RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, NULL,
+                    RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE,
+                    NULL, EOAC_NONE);
+
+  IEnumWbemClassObject* pEnumerator = NULL;
+  std::wstring query = L"SELECT " + property + L" FROM " + wmi_class;
+  hres = pSvc->ExecQuery(bstr_t("WQL"), bstr_t(query.c_str()),
+                         WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
+                         NULL, &pEnumerator);
+
+  std::string resultStr;
+  if (SUCCEEDED(hres) && pEnumerator) {
+    IWbemClassObject* pclsObj = NULL;
+    ULONG uReturn = 0;
+    HRESULT hr = pEnumerator->Next(WBEM_INFINITE, 1, &pclsObj, &uReturn);
+    if (uReturn != 0) {
+      VARIANT vtProp;
+      hr = pclsObj->Get(property.c_str(), 0, &vtProp, 0, 0);
+      if (SUCCEEDED(hr) && vtProp.vt == VT_BSTR) {
+        resultStr = WideToUtf8(vtProp.bstrVal);
+      }
+      VariantClear(&vtProp);
+      pclsObj->Release();
+    }
+    pEnumerator->Release();
+  }
+
+  pSvc->Release();
+  pLoc->Release();
+  CoUninitialize();
+  return resultStr;
 }
 
 static void HandleRequestHardwareInfo(
-    const flutter::MethodCall<flutter::EncodableValue>& call,
+    const flutter::MethodCall<flutter::EncodableValue>&,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
   std::string cpuId = QueryWmiProperty(L"Win32_Processor", L"ProcessorId");
   std::string boardId = QueryWmiProperty(L"Win32_BaseBoard", L"SerialNumber");
@@ -201,290 +186,186 @@ static void HandleRequestHardwareInfo(
   flutter::EncodableMap response = {
       {flutter::EncodableValue("systemCpuId"), flutter::EncodableValue(cpuId)},
       {flutter::EncodableValue("systemBoardId"), flutter::EncodableValue(boardId)}};
-
   result->Success(response);
 }
 
-
-
-// -------- CreateKeyPair --------
-// ---- Utility ----
-static std::wstring Utf8ToWide(const std::string& utf8) {
-  if (utf8.empty()) return L"";
-  int len = MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, nullptr, 0);
-  std::wstring wide(len - 1, 0);
-  MultiByteToWideChar(CP_UTF8, 0, utf8.c_str(), -1, wide.data(), len);
-  return wide;
-}
-
-// ---- Key creation / export ----
+// ---------- CNG Key Management ----------
 static std::vector<uint8_t> CreateOrOpenKeyPair(const std::wstring& keyName) {
-  NCRYPT_PROV_HANDLE hProv = NULL;
-  NCRYPT_KEY_HANDLE hKey = NULL;
-  SECURITY_STATUS status;
+  NCryptHandle hProv, hKey;
+  SECURITY_STATUS status = NCryptOpenStorageProvider(hProv.put(),
+                                                     MS_KEY_STORAGE_PROVIDER, 0);
+  if (status != ERROR_SUCCESS) throw std::runtime_error("OpenStorageProvider failed");
 
-  // Open the default software KSP
-  status = NCryptOpenStorageProvider(&hProv, MS_KEY_STORAGE_PROVIDER, 0);
-  if (status != ERROR_SUCCESS) {
-    throw std::runtime_error("NCryptOpenStorageProvider failed");
-  }
-
-  // Try opening the key
-  status = NCryptOpenKey(hProv, &hKey, keyName.c_str(), 0, 0);
+  status = NCryptOpenKey(hProv, hKey.put(), keyName.c_str(), 0, 0);
   if (status == NTE_BAD_KEYSET) {
-    // Create new key if it doesn't exist
-    status = NCryptCreatePersistedKey(
-        hProv,
-        &hKey,
-        NCRYPT_RSA_ALGORITHM,   // Could be changed to NCRYPT_ECDSA_P256_ALGORITHM
-        keyName.c_str(),
-        0,
-        NCRYPT_OVERWRITE_KEY_FLAG);
+    status = NCryptCreatePersistedKey(hProv, hKey.put(),
+                                      NCRYPT_RSA_ALGORITHM,
+                                      keyName.c_str(), 0,
+                                      NCRYPT_OVERWRITE_KEY_FLAG);
+    if (status != ERROR_SUCCESS) throw std::runtime_error("CreatePersistedKey failed");
 
-    if (status != ERROR_SUCCESS) {
-      NCryptFreeObject(hProv);
-      throw std::runtime_error("NCryptCreatePersistedKey failed");
-    }
-
-    // Set key length property (for RSA)
     DWORD keyLength = 2048;
-    status = NCryptSetProperty(
-        hKey,
-        NCRYPT_LENGTH_PROPERTY,
-        reinterpret_cast<PBYTE>(&keyLength),
-        sizeof(keyLength),
-        0);
+    status = NCryptSetProperty(hKey, NCRYPT_LENGTH_PROPERTY,
+                               (PBYTE)&keyLength, sizeof(keyLength), 0);
+    if (status != ERROR_SUCCESS) throw std::runtime_error("SetProperty failed");
 
-    if (status != ERROR_SUCCESS) {
-      NCryptFreeObject(hKey);
-      NCryptFreeObject(hProv);
-      throw std::runtime_error("NCryptSetProperty failed");
-    }
-
-    // Finalize key
     status = NCryptFinalizeKey(hKey, 0);
-    if (status != ERROR_SUCCESS) {
-      NCryptFreeObject(hKey);
-      NCryptFreeObject(hProv);
-      throw std::runtime_error("NCryptFinalizeKey failed");
-    }
+    if (status != ERROR_SUCCESS) throw std::runtime_error("FinalizeKey failed");
   } else if (status != ERROR_SUCCESS) {
-    NCryptFreeObject(hProv);
-    throw std::runtime_error("NCryptOpenKey failed");
+    throw std::runtime_error("OpenKey failed");
   }
 
-  // Export public key
   DWORD keySize = 0;
-  status = NCryptExportKey(
-      hKey,
-      NULL,
-      BCRYPT_RSAPUBLIC_BLOB,
-      NULL,
-      NULL,
-      0,
-      &keySize,
-      0);
-
-  if (status != ERROR_SUCCESS) {
-    NCryptFreeObject(hKey);
-    NCryptFreeObject(hProv);
-    throw std::runtime_error("NCryptExportKey size query failed");
-  }
+  status = NCryptExportKey(hKey, 0, BCRYPT_RSAPUBLIC_BLOB,
+                           nullptr, nullptr, 0, &keySize, 0);
+  if (status != ERROR_SUCCESS) throw std::runtime_error("ExportKey size failed");
 
   std::vector<uint8_t> pubKey(keySize);
-  status = NCryptExportKey(
-      hKey,
-      NULL,
-      BCRYPT_RSAPUBLIC_BLOB,
-      NULL,
-      pubKey.data(),
-      keySize,
-      &keySize,
-      0);
-
-  if (status != ERROR_SUCCESS) {
-    NCryptFreeObject(hKey);
-    NCryptFreeObject(hProv);
-    throw std::runtime_error("NCryptExportKey failed");
-  }
-
-  // Cleanup
-  NCryptFreeObject(hKey);
-  NCryptFreeObject(hProv);
+  status = NCryptExportKey(hKey, 0, BCRYPT_RSAPUBLIC_BLOB,
+                           nullptr, pubKey.data(), keySize, &keySize, 0);
+  if (status != ERROR_SUCCESS) throw std::runtime_error("ExportKey failed");
 
   return pubKey;
 }
 
-// Wrapper to handle CreateKeyPair channel call
 void HandleCreateKeyPair(
     const flutter::MethodCall<flutter::EncodableValue>& call,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
   try {
     const auto* args = std::get_if<flutter::EncodableMap>(call.arguments());
-    if (!args) {
-      throw std::runtime_error("Invalid arguments");
-    }
+    if (!args) throw std::runtime_error("Invalid arguments");
+    auto it = args->find(flutter::EncodableValue("keyName"));
+    if (it == args->end()) throw std::runtime_error("Missing keyName");
 
-    auto keyNameIt = args->find(flutter::EncodableValue("keyName"));
-    if (keyNameIt == args->end()) {
-      throw std::runtime_error("Missing keyName");
-    }
-
-    std::string keyNameUtf8 = std::get<std::string>(keyNameIt->second);
-    std::wstring keyName = Utf8ToWide(keyNameUtf8);
-
+    std::wstring keyName = Utf8ToWide(std::get<std::string>(it->second));
     auto pubKey = CreateOrOpenKeyPair(keyName);
-
     result->Success(flutter::EncodableValue(pubKey));
   } catch (const std::exception& ex) {
     result->Error("CNG_ERROR", ex.what());
   }
 }
 
+// ---------- Signing ----------
+static std::vector<uint8_t> SignWithKey(const std::wstring& keyName,
+                                        const std::vector<uint8_t>& data) {
+  NCRYPT_PROV_HANDLE hProvider = 0;
+  NCRYPT_KEY_HANDLE hKey = 0;
+  BCRYPT_ALG_HANDLE hAlgSha = nullptr;
+  BCRYPT_HASH_HANDLE hHash = nullptr;
 
-// void HandleCreateKeyPair(
-//     const flutter::MethodCall<flutter::EncodableValue>& call,
-//     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
-//   try {
-//     const auto* args = std::get_if<flutter::EncodableMap>(call.arguments());
-//     if (!args) throw std::runtime_error("Invalid arguments");
+  try {
+    SECURITY_STATUS status = NCryptOpenStorageProvider(&hProvider, MS_KEY_STORAGE_PROVIDER, 0);
+    if (status != ERROR_SUCCESS) {
+      throw std::runtime_error("NCryptOpenStorageProvider failed");
+    }
 
-//     auto keyNameIt = args->find(flutter::EncodableValue("keyName"));
-//     if (keyNameIt == args->end()) throw std::runtime_error("Missing keyName");
+    status = NCryptOpenKey(hProvider, &hKey, keyName.c_str(), 0, 0);
+    if (status != ERROR_SUCCESS) {
+      throw std::runtime_error("NCryptOpenKey failed - key not found");
+    }
 
-//     std::string keyNameUtf8 = std::get<std::string>(keyNameIt->second);
-//     std::wstring keyName = Utf8ToWide(keyNameUtf8);
+    status = BCryptOpenAlgorithmProvider(&hAlgSha, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
+    if (status != ERROR_SUCCESS) {
+      throw std::runtime_error("BCryptOpenAlgorithmProvider (SHA256) failed");
+    }
 
-//     DebugLog(L"[HandleCreateKeyPair] Creating/Opening key pair for: " + keyName);
+    // Query hash object/length
+    DWORD hashObjLen = 0, hashLen = 0, cbData = 0;
+    status = BCryptGetProperty(hAlgSha, BCRYPT_OBJECT_LENGTH,
+                               reinterpret_cast<PUCHAR>(&hashObjLen), sizeof(DWORD), &cbData, 0);
+    status = BCryptGetProperty(hAlgSha, BCRYPT_HASH_LENGTH,
+                               reinterpret_cast<PUCHAR>(&hashLen), sizeof(DWORD), &cbData, 0);
 
-//     auto pubKey = CreateOrOpenKeyPair(keyName);
-//     DebugLog(L"[HandleCreateKeyPair] Public key size: " + std::to_wstring(pubKey.size()));
+    std::vector<uint8_t> hash(hashLen);
+    std::vector<uint8_t> hashObj(hashObjLen);
 
-//     result->Success(flutter::EncodableValue(
-//         flutter::EncodableValue::ByteArray(pubKey.begin(), pubKey.end())));
-//   } catch (const std::exception& ex) {
-//     DebugLog(L"[HandleCreateKeyPair] Exception: " + Utf8ToWide(ex.what()));
-//     result->Error("CNG_ERROR", ex.what());
-//   }
-// }
+    status = BCryptCreateHash(hAlgSha, &hHash, hashObj.data(), hashObjLen, nullptr, 0, 0);
+    if (status != ERROR_SUCCESS) {
+      throw std::runtime_error("BCryptCreateHash failed");
+    }
 
+    status = BCryptHashData(hHash, const_cast<PUCHAR>(data.data()),
+                            static_cast<ULONG>(data.size()), 0);
+    if (status != ERROR_SUCCESS) {
+      throw std::runtime_error("BCryptHashData failed");
+    }
 
-// ---- Signing ----
-// static std::vector<uint8_t> SignWithKey(const std::wstring& keyName,
-//                                         const std::vector<uint8_t>& data) {
-//   DebugLog(L">>> SignWithKey called for key: " + keyName);
+    status = BCryptFinishHash(hHash, hash.data(), hashLen, 0);
+    if (status != ERROR_SUCCESS) {
+      throw std::runtime_error("BCryptFinishHash failed");
+    }
 
-//   BCRYPT_ALG_HANDLE hAlgRsa = nullptr, hAlgSha = nullptr;
-//   BCRYPT_KEY_HANDLE hKey = nullptr;
-//   NTSTATUS status;
+    BCRYPT_PKCS1_PADDING_INFO paddingInfo;
+    paddingInfo.pszAlgId = BCRYPT_SHA256_ALGORITHM; // correct value
 
-//   status = BCryptOpenAlgorithmProvider(&hAlgRsa, BCRYPT_RSA_ALGORITHM, NULL, 0);
-//   if (status != 0) {
-//     DebugLog(L"BCryptOpenAlgorithmProvider (RSA) failed");
-//     throw std::runtime_error("BCryptOpenAlgorithmProvider (RSA) failed");
-//   }
+    // Query signature size
+    DWORD sigLen = 0;
+    status = NCryptSignHash(hKey, &paddingInfo, hash.data(), hashLen,
+                            nullptr, 0, &sigLen, BCRYPT_PAD_PKCS1);
+    if (status != ERROR_SUCCESS) {
+      throw std::runtime_error("NCryptSignHash (size query) failed");
+    }
 
-//   status = BCryptOpenKey(hAlgRsa, &hKey, keyName.c_str(), 0, 0);
-//   if (status != 0) {
-//     DebugLog(L"BCryptOpenKey failed");
-//     BCryptCloseAlgorithmProvider(hAlgRsa, 0);
-//     throw std::runtime_error("BCryptOpenKey failed");
-//   }
+    std::vector<uint8_t> signature(sigLen);
 
-//   // Hash with SHA256
-//   status = BCryptOpenAlgorithmProvider(&hAlgSha, BCRYPT_SHA256_ALGORITHM, NULL, 0);
-//   if (status != 0) {
-//     DebugLog(L"BCryptOpenAlgorithmProvider (SHA256) failed");
-//     BCryptDestroyKey(hKey);
-//     BCryptCloseAlgorithmProvider(hAlgRsa, 0);
-//     throw std::runtime_error("BCryptOpenAlgorithmProvider (SHA256) failed");
-//   }
+    // Perform signature
+    status = NCryptSignHash(hKey, &paddingInfo, hash.data(), hashLen,
+                            signature.data(), sigLen, &sigLen, BCRYPT_PAD_PKCS1);
+    if (status != ERROR_SUCCESS) {
+      throw std::runtime_error("NCryptSignHash failed");
+    }
 
-//   DWORD hashObjLen = 0, hashLen = 0, cbData = 0;
-//   status = BCryptGetProperty(hAlgSha, BCRYPT_OBJECT_LENGTH,
-//                              (PUCHAR)&hashObjLen, sizeof(DWORD), &cbData, 0);
-//   status = BCryptGetProperty(hAlgSha, BCRYPT_HASH_LENGTH,
-//                              (PUCHAR)&hashLen, sizeof(DWORD), &cbData, 0);
+    signature.resize(sigLen);
 
-//   std::vector<uint8_t> hash(hashLen);
-//   std::vector<uint8_t> hashObj(hashObjLen);
+    if (hHash) BCryptDestroyHash(hHash);
+    if (hAlgSha) BCryptCloseAlgorithmProvider(hAlgSha, 0);
+    if (hKey) NCryptFreeObject(hKey);
+    if (hProvider) NCryptFreeObject(hProvider);
 
-//   BCRYPT_HASH_HANDLE hHash = nullptr;
-//   status = BCryptCreateHash(hAlgSha, &hHash, hashObj.data(), hashObjLen, NULL, 0, 0);
-//   status = BCryptHashData(hHash, (PUCHAR)data.data(), (ULONG)data.size(), 0);
-//   status = BCryptFinishHash(hHash, hash.data(), hashLen, 0);
+    return signature;
+  } catch (...) {
+    if (hHash) BCryptDestroyHash(hHash);
+    if (hAlgSha) BCryptCloseAlgorithmProvider(hAlgSha, 0);
+    if (hKey) NCryptFreeObject(hKey);
+    if (hProvider) NCryptFreeObject(hProvider);
+    throw;
+  }
+}
 
-//   DebugLog(L"SHA256 hash computed");
+void HandleSignNonce(
+    const flutter::MethodCall<flutter::EncodableValue>& call,
+    std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+  try {
+    const auto* args = std::get_if<flutter::EncodableMap>(call.arguments());
+    if (!args) throw std::runtime_error("Invalid arguments");
 
-//   // Sign the hash
-//   DWORD sigLen = 0;
-//   status = BCryptSignHash(hKey, NULL, hash.data(), hashLen,
-//                           NULL, 0, &sigLen, BCRYPT_PAD_PKCS1);
-//   if (status != 0) {
-//     DebugLog(L"BCryptSignHash (size) failed");
-//     throw std::runtime_error("BCryptSignHash (size) failed");
-//   }
+    auto keyIt = args->find(flutter::EncodableValue("keyName"));
+    auto nonceIt = args->find(flutter::EncodableValue("nonce"));
+    if (keyIt == args->end() || nonceIt == args->end())
+      throw std::runtime_error("Missing arguments");
 
-//   std::vector<uint8_t> signature(sigLen);
-//   status = BCryptSignHash(hKey, NULL, hash.data(), hashLen,
-//                           signature.data(), sigLen, &sigLen, BCRYPT_PAD_PKCS1);
-//   if (status != 0) {
-//     DebugLog(L"BCryptSignHash failed");
-//     throw std::runtime_error("BCryptSignHash failed");
-//   }
+    std::wstring keyName = Utf8ToWide(std::get<std::string>(keyIt->second));
+    std::vector<uint8_t> nonce = std::get<std::vector<uint8_t>>(nonceIt->second);
 
-//   DebugLog(L"Data signed successfully");
-
-//   BCryptDestroyHash(hHash);
-//   BCryptDestroyKey(hKey);
-//   BCryptCloseAlgorithmProvider(hAlgSha, 0);
-//   BCryptCloseAlgorithmProvider(hAlgRsa, 0);
-
-//   return signature;
-// }
-
-// Wrapper to handle SignNonce channel call
-// void HandleSignNonce(
-//     const flutter::MethodCall<flutter::EncodableValue>& call,
-//     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
-//   try {
-//     const auto* args = std::get_if<flutter::EncodableMap>(call.arguments());
-//     if (!args) throw std::runtime_error("Invalid arguments");
-
-//     auto keyNameIt = args->find(flutter::EncodableValue("keyName"));
-//     auto nonceIt   = args->find(flutter::EncodableValue("nonce"));
-//     if (keyNameIt == args->end() || nonceIt == args->end())
-//       throw std::runtime_error("Missing arguments");
-
-//     std::string keyNameUtf8 = std::get<std::string>(keyNameIt->second);
-//     std::wstring keyName = Utf8ToWide(keyNameUtf8);
-
-//     std::vector<uint8_t> nonce = std::get<std::vector<uint8_t>>(nonceIt->second);
-
-//     DebugLog(L"[HandleSignNonce] Signing nonce");
-//     auto signature = SignWithKey(keyName, nonce);
-
-//     result->Success(flutter::EncodableValue(signature));
-//   } catch (const std::exception& ex) {
-//     DebugLog(L"[HandleSignNonce] Exception: " + Utf8ToWide(ex.what()));
-//     result->Error("CNG_ERROR", ex.what());
-//   }
-// }
+    auto signature = SignWithKey(keyName, nonce);
+    result->Success(flutter::EncodableValue(signature));
+  } catch (const std::exception& ex) {
+    result->Error("CNG_ERROR", ex.what());
+  }
+}
 
 
-// ========== Plugin Boilerplate ==========
-
+// ---------- Plugin Boilerplate ----------
 void FlutterNativeUtilsPlugin::RegisterWithRegistrar(
     flutter::PluginRegistrarWindows *registrar) {
-  auto channel =
-      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
-          registrar->messenger(), "flutter_native_utils",
-          &flutter::StandardMethodCodec::GetInstance());
+  auto channel = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+      registrar->messenger(), "flutter_native_utils",
+      &flutter::StandardMethodCodec::GetInstance());
 
   auto plugin = std::make_unique<FlutterNativeUtilsPlugin>();
 
   channel->SetMethodCallHandler(
-      [plugin_pointer = plugin.get()](const auto &call, auto result) {
+      [plugin_pointer = plugin.get()](const auto& call, auto result) {
         plugin_pointer->HandleMethodCall(call, std::move(result));
       });
 
@@ -492,13 +373,11 @@ void FlutterNativeUtilsPlugin::RegisterWithRegistrar(
 }
 
 FlutterNativeUtilsPlugin::FlutterNativeUtilsPlugin() {}
-
 FlutterNativeUtilsPlugin::~FlutterNativeUtilsPlugin() {}
 
 void FlutterNativeUtilsPlugin::HandleMethodCall(
-    const flutter::MethodCall<flutter::EncodableValue>& method_call,
+    const flutter::MethodCall<flutter::EncodableValue>& call,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
-  
   using Handler = std::function<void(
       const flutter::MethodCall<flutter::EncodableValue>&,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>>)>;
@@ -507,19 +386,15 @@ void FlutterNativeUtilsPlugin::HandleMethodCall(
       {"RequestAppRestart", HandleRequestAppRestart},
       {"RequestHardwareInfo", HandleRequestHardwareInfo},
       {"CreateKeyPair", HandleCreateKeyPair},
-      // {"SignNonce", HandleSignNonce},
+      {"SignNonce", HandleSignNonce},
   };
 
-  const std::string& method = method_call.method_name();
-  auto it = handlers.find(method);
-
+  auto it = handlers.find(call.method_name());
   if (it != handlers.end()) {
-    it->second(method_call, std::move(result));
+    it->second(call, std::move(result));
   } else {
     result->NotImplemented();
   }
 }
-
-
 
 }  // namespace flutter_native_utils

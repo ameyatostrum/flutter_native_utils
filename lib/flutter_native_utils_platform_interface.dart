@@ -62,7 +62,7 @@ abstract class FlutterNativeUtilsPlatform extends PlatformInterface {
   /// Throws:
   /// - [PlatformException] if signing fails.
   /// - [MissingPluginException] if no platform implementation is registered.
-  Future<Uint8List> signNonce(Uint8List nonce) {
+  Future<Uint8List> signNonce(Uint8List nonce, String keyName) {
     throw UnimplementedError('signNonce() has not been implemented.');
   }
 

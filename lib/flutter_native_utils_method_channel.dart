@@ -83,26 +83,27 @@ class MethodChannelFlutterNativeUtils extends FlutterNativeUtilsPlatform {
     }
   }
 
-  // @override
-  // Future<Uint8List> signNonce(Uint8List nonce) async {
-  //   try {
-  //     final signature = await methodChannel.invokeMethod<Uint8List>('SignNonce', {'nonce': nonce});
-  //     if (signature == null) {
-  //       throw Exception("TPM returned no signature.");
-  //     }
-  //     return signature;
-  //   } on PlatformException catch (error) {
-  //     // Handles platform-specific exceptions.
-  //     // Throws an exception indicating the failure reason.
-  //     throw Exception("Unable to get signNonce, platform interaction failed with error: $error");
-  //   } on MissingPluginException catch (_) {
-  //     // Handles the case where the plugin is not created for the platform.
-  //     // Throws an exception indicating the missing plugin.
-  //     throw Exception("Plugin is not created for this platform.");
-  //   } catch (error) {
-  //     // Handles any other exceptions.
-  //     // Throws an exception indicating an unexpected error.
-  //     throw Exception("Unexpected error occured, error: $error");
-  //   }
-  // }
+  @override
+  Future<Uint8List> signNonce(Uint8List nonce, String keyName) async {
+    try {
+      final signature = await methodChannel.invokeMethod<Uint8List>(
+        'SignNonce',
+        {
+          'keyName': keyName,
+          'nonce': nonce,
+        },
+      );
+
+      if (signature == null) {
+        throw Exception("Platform returned no signature.");
+      }
+      return signature;
+    } on PlatformException catch (error) {
+      throw Exception("Unable to sign nonce: $error");
+    } on MissingPluginException catch (_) {
+      throw Exception("Plugin is not created for this platform.");
+    } catch (error) {
+      throw Exception("Unexpected error occurred: $error");
+    }
+  }
 }

@@ -186,4 +186,79 @@ void main() {
       });
     },
   );
+
+  group('signNonce', () {
+    const keyName = 'key_name';
+    test('should return Uint8List when native call succeeds', () async {
+      // Arrange
+      final mockNonce = Uint8List.fromList([10, 20, 30]);
+      final mockSignature = Uint8List.fromList([99, 100, 101]);
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        methodChannel,
+        (MethodCall methodCall) async {
+          expect(methodCall.method, 'SignNonce');
+          expect(methodCall.arguments, {
+            'keyName': 'key_name',
+            'nonce': [10, 20, 30]
+          });
+          return mockSignature;
+        },
+      );
+
+      // Act
+      final result = await sut.signNonce(mockNonce, keyName);
+
+      // Assert
+      expect(result, isA<Uint8List>());
+      expect(result, mockSignature);
+    });
+
+    test('should throw Exception when platform returns null', () async {
+      // Arrange
+      final mockNonce = Uint8List.fromList([10, 20, 30]);
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        methodChannel,
+        (MethodCall methodCall) async {
+          expect(methodCall.method, 'SignNonce');
+          expect(methodCall.arguments, {'nonce': mockNonce});
+          return null;
+        },
+      );
+
+      // Act & Assert
+      expect(() => sut.signNonce(mockNonce, keyName), throwsException);
+    });
+
+    test('should throw Exception when PlatformException is thrown', () async {
+      // Arrange
+      final mockNonce = Uint8List.fromList([10, 20, 30]);
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        methodChannel,
+        (MethodCall methodCall) async {
+          throw PlatformException(code: 'ERROR', message: 'Signing failed');
+        },
+      );
+
+      // Act & Assert
+      expect(() => sut.signNonce(mockNonce, keyName), throwsException);
+    });
+
+    test('should throw Exception when MissingPluginException is thrown', () async {
+      // Arrange
+      final mockNonce = Uint8List.fromList([10, 20, 30]);
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+        methodChannel,
+        (MethodCall methodCall) async {
+          throw MissingPluginException('Not implemented');
+        },
+      );
+
+      // Act & Assert
+      expect(() => sut.signNonce(mockNonce, keyName), throwsException);
+    });
+  });
 }
