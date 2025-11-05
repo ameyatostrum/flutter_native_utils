@@ -106,4 +106,26 @@ class MethodChannelFlutterNativeUtils extends FlutterNativeUtilsPlatform {
       throw Exception("Unexpected error occurred: $error");
     }
   }
+
+  @override
+  Future<Map<String, dynamic>?> getCertificate(String thumbprint) async {
+    try {
+      final result = await methodChannel.invokeMethod('GetCertificate', {
+        'thumbprint': thumbprint,
+      });
+      return Map<String, dynamic>.from(result);
+    } on PlatformException catch (error) {
+      // Handles platform-specific exceptions.
+      // Throws an exception indicating the failure reason.
+      throw Exception("Unable to get the certificate, platform interaction failed with error: $error");
+    } on MissingPluginException catch (_) {
+      // Handles the case where the plugin is not created for the platform.
+      // Throws an exception indicating the missing plugin.
+      throw Exception("Plugin is not created for this platform.");
+    } catch (error) {
+      // Handles any other exceptions.
+      // Throws an exception indicating an unexpected error.
+      throw Exception("Unexpected error occured, error: $error");
+    }
+  }
 }

@@ -16,6 +16,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <sstream>
 #include <unordered_map>
 #include <functional>
 
@@ -23,11 +24,14 @@
 #include <winrt/Windows.Foundation.h>
 
 #include <ncrypt.h>
+#include <wincrypt.h>
 #include <iostream>
+#include <iomanip>
 
 // Link required libraries
 #pragma comment(lib, "wbemuuid.lib")
 #pragma comment(lib, "ncrypt.lib")
+#pragma comment(lib, "crypt32.lib")
 
 using namespace winrt;
 using namespace Windows::ApplicationModel::Core;
@@ -35,10 +39,25 @@ using namespace Windows::Foundation;
 
 namespace flutter_native_utils {
 
+// ---------- Helper Functions ----------
+
 // ---------- Debug helper ----------
-static void DebugLog(const std::wstring& msg) {
-  OutputDebugString((msg + L"\n").c_str());
+// #ifdef _DEBUG
+// static void DebugLog(const std::wstring& msg) {
+//   OutputDebugString((msg + L"\n").c_str());
+// }
+// #endif
+
+static std::vector<BYTE> HexStringToBytes(const std::string& hex) {
+  std::vector<BYTE> bytes;
+  for (size_t i = 0; i < hex.length(); i += 2) {
+    std::string byteString = hex.substr(i, 2);
+    BYTE byte = static_cast<BYTE>(strtol(byteString.c_str(), nullptr, 16));
+    bytes.push_back(byte);
+  }
+  return bytes;
 }
+
 
 // ---------- RAII wrapper for NCrypt handles ----------
 struct NCryptHandle {
@@ -354,6 +373,85 @@ void HandleSignNonce(
   }
 }
 
+// ---------- GetCertificate ----------
+static std::wstring GetCertificate(const std::string& thumbprint, 
+                                   std::vector<BYTE>& certBytes) {
+  // Open current user's personal certificate store
+  HCERTSTORE hStore = CertOpenStore(
+      CERT_STORE_PROV_SYSTEM,
+      0,
+      NULL,
+      CERT_SYSTEM_STORE_CURRENT_USER,
+      L"MY"
+  );
+
+  if (!hStore) {
+    return L"Failed to open certificate store.";
+  }
+
+  // Convert thumbprint string to binary
+  std::vector<BYTE> binaryThumbprint = HexStringToBytes(thumbprint);
+  
+  // Find certificate by thumbprint
+  CRYPT_HASH_BLOB hashBlob;
+  hashBlob.cbData = static_cast<DWORD>(binaryThumbprint.size());
+  hashBlob.pbData = binaryThumbprint.data();
+
+  PCCERT_CONTEXT pCertContext = CertFindCertificateInStore(
+      hStore,
+      X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+      0,
+      CERT_FIND_HASH,
+      &hashBlob,
+      NULL
+  );
+
+  if (!pCertContext) {
+    CertCloseStore(hStore, 0);
+    return L"Certificate not found.";
+  }
+
+  // Export certificate data
+  certBytes.assign(pCertContext->pbCertEncoded,
+                   pCertContext->pbCertEncoded + pCertContext->cbCertEncoded);
+
+  CertFreeCertificateContext(pCertContext);
+  CertCloseStore(hStore, 0);
+
+  return L"Success";
+}
+
+void HandleGetCertificate(
+    const flutter::MethodCall<flutter::EncodableValue>& call,
+    std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+  
+  const auto* arguments = std::get_if<flutter::EncodableMap>(call.arguments());
+  if (!arguments) {
+    result->Error("BAD_ARGS", "Invalid arguments");
+    return;
+  }
+
+  auto thumbprint_it = arguments->find(flutter::EncodableValue("thumbprint"));
+  if (thumbprint_it == arguments->end()) {
+    result->Error("BAD_ARGS", "Missing thumbprint parameter");
+    return;
+  }
+
+  std::string thumbprint = std::get<std::string>(thumbprint_it->second);
+  std::vector<BYTE> certBytes;
+  
+  std::wstring msg = GetCertificate(thumbprint, certBytes);
+  
+  if (msg == L"Success") {
+    flutter::EncodableMap certData;
+    certData[flutter::EncodableValue("certificate")] = 
+        flutter::EncodableValue(certBytes);
+    result->Success(flutter::EncodableValue(certData));
+  } else {
+    result->Error("FAILURE", WideToUtf8(msg));
+  }
+}
+
 
 // ---------- Plugin Boilerplate ----------
 void FlutterNativeUtilsPlugin::RegisterWithRegistrar(
@@ -387,6 +485,7 @@ void FlutterNativeUtilsPlugin::HandleMethodCall(
       {"RequestHardwareInfo", HandleRequestHardwareInfo},
       {"CreateKeyPair", HandleCreateKeyPair},
       {"SignNonce", HandleSignNonce},
+      {"GetCertificate", HandleGetCertificate},
   };
 
   auto it = handlers.find(call.method_name());
