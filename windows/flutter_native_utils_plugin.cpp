@@ -375,8 +375,8 @@ void HandleSignNonce(
 
 // ---------- GetCertificate ----------
 static std::wstring GetCertificate(const std::string& thumbprint, 
-                                   std::vector<BYTE>& certBytes) {
-  // Open current user's personal certificate store
+                                   std::vector<BYTE>& certBytes,
+                                   const std::string& password) {
   HCERTSTORE hStore = CertOpenStore(
       CERT_STORE_PROV_SYSTEM,
       0,
@@ -389,10 +389,8 @@ static std::wstring GetCertificate(const std::string& thumbprint,
     return L"Failed to open certificate store.";
   }
 
-  // Convert thumbprint string to binary
   std::vector<BYTE> binaryThumbprint = HexStringToBytes(thumbprint);
   
-  // Find certificate by thumbprint
   CRYPT_HASH_BLOB hashBlob;
   hashBlob.cbData = static_cast<DWORD>(binaryThumbprint.size());
   hashBlob.pbData = binaryThumbprint.data();
@@ -411,10 +409,60 @@ static std::wstring GetCertificate(const std::string& thumbprint,
     return L"Certificate not found.";
   }
 
-  // Export certificate data
-  certBytes.assign(pCertContext->pbCertEncoded,
-                   pCertContext->pbCertEncoded + pCertContext->cbCertEncoded);
+  // Create a temporary memory store for PFX export
+  HCERTSTORE hMemStore = CertOpenStore(
+      CERT_STORE_PROV_MEMORY,
+      0,
+      NULL,
+      0,
+      NULL
+  );
 
+  if (!hMemStore) {
+    CertFreeCertificateContext(pCertContext);
+    CertCloseStore(hStore, 0);
+    return L"Failed to create memory store.";
+  }
+
+  // Add certificate with private key to memory store
+  if (!CertAddCertificateContextToStore(hMemStore, pCertContext, 
+                                        CERT_STORE_ADD_ALWAYS, NULL)) {
+    CertCloseStore(hMemStore, 0);
+    CertFreeCertificateContext(pCertContext);
+    CertCloseStore(hStore, 0);
+    return L"Failed to add certificate to memory store.";
+  }
+
+  // Convert password to wide string
+  std::wstring wPassword(password.begin(), password.end());
+
+  // Export as PFX
+  CRYPT_DATA_BLOB pfxBlob = { 0 };
+  pfxBlob.cbData = 0;
+  pfxBlob.pbData = NULL;
+
+  // Get required size
+  if (!PFXExportCertStoreEx(hMemStore, &pfxBlob, wPassword.c_str(), NULL,
+                            EXPORT_PRIVATE_KEYS)) {
+    CertCloseStore(hMemStore, 0);
+    CertFreeCertificateContext(pCertContext);
+    CertCloseStore(hStore, 0);
+    return L"Failed to get PFX size.";
+  }
+
+  // Allocate and export
+  certBytes.resize(pfxBlob.cbData);
+  pfxBlob.pbData = certBytes.data();
+
+  if (!PFXExportCertStoreEx(hMemStore, &pfxBlob, wPassword.c_str(), NULL,
+                            EXPORT_PRIVATE_KEYS)) {
+    CertCloseStore(hMemStore, 0);
+    CertFreeCertificateContext(pCertContext);
+    CertCloseStore(hStore, 0);
+    return L"Failed to export PFX.";
+  }
+
+  CertCloseStore(hMemStore, 0);
   CertFreeCertificateContext(pCertContext);
   CertCloseStore(hStore, 0);
 
@@ -437,10 +485,17 @@ void HandleGetCertificate(
     return;
   }
 
+  // Optional password parameter (empty string if not provided)
+  std::string password = "";
+  auto password_it = arguments->find(flutter::EncodableValue("password"));
+  if (password_it != arguments->end()) {
+    password = std::get<std::string>(password_it->second);
+  }
+
   std::string thumbprint = std::get<std::string>(thumbprint_it->second);
   std::vector<BYTE> certBytes;
   
-  std::wstring msg = GetCertificate(thumbprint, certBytes);
+  std::wstring msg = GetCertificate(thumbprint, certBytes, password);
   
   if (msg == L"Success") {
     flutter::EncodableMap certData;
@@ -451,7 +506,6 @@ void HandleGetCertificate(
     result->Error("FAILURE", WideToUtf8(msg));
   }
 }
-
 
 // ---------- Plugin Boilerplate ----------
 void FlutterNativeUtilsPlugin::RegisterWithRegistrar(
